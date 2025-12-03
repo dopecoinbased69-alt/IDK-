@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>The F***ing Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #000;
+            overflow: hidden;
+            touch-action: none;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #ui {
+            position: absolute;
+            z-index: 10;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0,0,0,0.8);
+            transition: opacity 0.5s;
+        }
+        .hidden-ui {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* --- BLUE UI BUTTONS --- */
+        .btn {
+            background: #000;
+            color: #00aaff;
+            border: 4px solid #00aaff;
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin: 10px;
+            cursor: pointer;
+            transition: transform 0.1s, background 0.2s, color 0.2s, border 0.2s;
+            text-transform: uppercase;
+            box-shadow: 4px 4px 0px #00aaff;
+        }
+        .btn:active {
+            transform: translate(2px, 2px);
+            box-shadow: 2px 2px 0px #00aaff;
+        }
+        .btn:hover {
+            background: #00aaff;
+            color: #000;
+            border-color: #00aaff;
+            box-shadow: 4px 4px 0px #00aaff;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 5;
+            display: flex;
+            gap: 10px;
+            opacity: 0;
+            transition: opacity 1s;
+        }
+
+        #btn-stop {
+            background: #000;
+            color: #00aaff;
+            border: 2px solid #00aaff;
+        }
+        #btn-stop:hover {
+            background: #00aaff;
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="ui">
+        <h1 class="text-4xl md:text-6xl text-white font-black mb-8 text-center tracking-tighter"
+            style="text-shadow: 4px 4px 0 #00aaff;">
+            AUDIO<br>VISUALIZER<br>🖕
+        </h1>
+        <p class="text-gray-300 mb-6 text-center max-w-md px-4">
+            Warning: Contains flashing lights and rude emojis.
+        </p>
+        <button id="btn-demo" class="btn">Play Demo Beat</button>
+        <button id="btn-mic" class="btn">Use Microphone</button>
+    </div>
+
+    <div id="controls">
+        <button id="btn-stop" class="font-bold py-2 px-4 rounded-full opacity-50 hover:opacity-100">STOP</button>
+    </div>
+
+    <script>
+        class AudioEngine {
+            constructor() {
+                this.ctx = null;
+                this.analyser = null;
+                this.source = null;
+                this.dataArray = null;
+                this.isPlaying = false;
+                this.mode = null;
+                
+                this.nextNoteTime = 0;
+                this.tempo = 128;
+                this.timerID = null;
+                this.beatCount = 0;
+            }
+
+            init() {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                this.ctx = new AudioContext();
+                this.analyser = this.ctx.createAnalyser();
+                this.analyser.fftSize = 256;
+                this.bufferLength = this.analyser.frequencyBinCount;
+                this.dataArray = new Uint8Array(this.bufferLength);
+            }
+
+            async startMic() {
+                if (!this.ctx) this.init();
+                this.mode = 'mic';
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    this.source = this.ctx.createMediaStreamSource(stream);
+                    this.source.connect(this.analyser);
+                    this.isPlaying = true;
+                    if (this.ctx.state === 'suspended') this.ctx.resume();
+                } catch (err) {
+                    alert("Microphone access denied.");
+                    console.error(err);
+                }
+            }
+
+            startDemo() {
+                if (!this.ctx) this.init();
+                this.mode = 'demo';
+                this.isPlaying = true;
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+                
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.5;
+                this.masterGain.connect(this.analyser);
+                this.analyser.connect(this.ctx.destination);
+
+                this.nextNoteTime = this.ctx.currentTime;
+                this.scheduler();
+            }
+
+            stop() {
+                this.isPlaying = false;
+                if (this.timerID) clearTimeout(this.timerID);
+                if (this.ctx) this.ctx.close();
+                window.location.reload();
+            }
+
+            scheduler() {
+                while (this.nextNoteTime < this.ctx.currentTime + 0.1) {
+                    this.playBeat(this.nextNoteTime);
+                    this.scheduleNextBeat();
+                }
+                if (this.isPlaying) {
+                    this.timerID = setTimeout(() => this.scheduler(), 25);
+                }
+            }
+
+            scheduleNextBeat() {
+                const secondsPerBeat = 60.0 / this.tempo;
+                this.nextNoteTime += 0.25 * secondsPerBeat;
+                this.beatCount++;
+            }
+
+            playBeat(time) {
+                const step = this.beatCount % 16;
+
+                if (step % 4 === 0) this.playKick(time);
+                if (step % 2 !== 0 || step === 14 || step === 6) this.playHat(time, step % 2 !== 0 ? 0.1 : 0.05);
+                if ([2, 6, 10, 14].includes(step)) this.playBass(time);
+            }
+
+            playKick(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+
+                osc.frequency.setValueAtTime(150, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                
+                gain.gain.setValueAtTime(1, time);
+                gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+
+                osc.start(time);
+                osc.stop(time + 0.5);
+            }
+
+            playHat(time, vol) {
+                const bufferSize = this.ctx.sampleRate * 2; 
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+                
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'highpass';
+                filter.frequency.value = 1000;
+
+                const gain = this.ctx.createGain();
+                
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+
+                gain.gain.setValueAtTime(vol, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+
+                noise.start(time);
+                noise.stop(time + 0.05);
+            }
+
+            playBass(time) {
+                const osc = this.ctx.createOscillator();
+                osc.type = 'sawtooth';
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'lowpass';
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+
+                osc.frequency.value = 65;
+                
+                filter.frequency.setValueAtTime(100, time);
+                filter.frequency.linearRampToValueAtTime(800, time + 0.1);
+                filter.frequency.linearRampToValueAtTime(100, time + 0.2);
+
+                gain.gain.setValueAtTime(0.4, time);
+                gain.gain.linearRampToValueAtTime(0, time + 0.2);
+
+                osc.start(time);
+                osc.stop(time + 0.2);
+            }
+
+            getAnalysis() {
+                if (!this.analyser) return { bass: 0, mid: 0, high: 0, raw: [] };
+                
+                this.analyser.getByteFrequencyData(this.dataArray);
+                
+                const bassEnd = Math.floor(this.bufferLength * 0.1);
+                const midEnd = Math.floor(this.bufferLength * 0.5);
+                
+                let bassSum = 0, midSum = 0, highSum = 0;
+                
+                for(let i=0; i<this.bufferLength; i++) {
+                    if (i < bassEnd) bassSum += this.dataArray[i];
+                    else if (i < midEnd) midSum += this.dataArray[i];
+                    else highSum += this.dataArray[i];
+                }
+
+                return {
+                    bass: bassSum / bassEnd,
+                    mid: midSum / (midEnd - bassEnd),
+                    high: highSum / (this.bufferLength - midEnd),
+                    raw: this.dataArray
+                };
+            }
+        }
+
+        /* --- VISUALIZER --- */
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        let width, height;
+
+        const particles = [];
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 10;
+                this.vy = (Math.random() - 0.5) * 10;
+                this.life = 1.0;
+                this.size = Math.random() * 20 + 10;
+                this.emoji = Math.random() > 0.9 ? '🤬' : '🖕';
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= 0.02;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = this.life;
+                ctx.font = `${this.size}px Arial`;
+                ctx.fillStyle = '#00aaff';
+                ctx.fillText(this.emoji, this.x, this.y);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const audio = new AudioEngine();
+        let animationId;
+
+        function animate() {
+            animationId = requestAnimationFrame(animate);
+
+            const data = audio.getAnalysis();
+            const bass = data.bass;
+            const mid = data.mid;
+            const high = data.high;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(0, 0, width, height);
+
+            const cx = width / 2;
+            const cy = height / 2;
+
+            /* --- RING OF FINGERS --- */
+            const radiusBase = Math.min(width, height) * 0.25;
+            const bars = 30;
+            const step = (Math.PI * 2) / bars;
+
+            for (let i = 0; i < bars; i++) {
+                const dataIndex = Math.floor((i / bars) * (data.raw.length / 2));
+                const val = data.raw[dataIndex];
+                
+                const angle = i * step;
+                const wobble = Math.sin(Date.now() * 0.005 + i) * (high * 0.1); 
+                const barLen = (val / 255) * (Math.min(width,height)*0.25);
+                
+                const x = cx + Math.cos(angle) * (radiusBase + barLen + wobble);
+                const y = cy + Math.sin(angle) * (radiusBase + barLen + wobble);
+
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(angle + Math.PI/2); 
+                
+                const fingerSize = 20 + (val/255)*40;
+                ctx.font = `${fingerSize}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = '#00aaff';
+                ctx.fillStyle = '#00aaff';
+                
+                ctx.fillText('🖕', 0, 0);
+                ctx.restore();
+            }
+
+            /* --- CENTRAL FINGER --- */
+            const scale = 1 + (bass / 255) * 1.5;
+            const rot = Math.sin(Date.now() * 0.02) * (high / 255) * 0.5;
+
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(rot);
+            ctx.scale(scale, scale);
+            
+            ctx.font = '100px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            ctx.shadowBlur = 40;
+            ctx.shadowColor = '#00aaff';
+            ctx.fillStyle = '#00aaff';
+            
+            ctx.fillText('🖕', 0, 0);
+
+            ctx.restore();
+
+            /* --- PARTICLES ON BEAT --- */
+            if (bass > 210) {
+                for (let i = 0; i < 2; i++) particles.push(new Particle(cx, cy));
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.update();
+                p.draw(ctx);
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        const ui = document.getElementById('ui');
+        const btnMic = document.getElementById('btn-mic');
+        const btnDemo = document.getElementById('btn-demo');
+        const btnStop = document.getElementById('btn-stop');
+        const controls = document.getElementById('controls');
+
+        function startVisualizer(mode) {
+            ui.classList.add('hidden-ui');
+            controls.style.opacity = '1';
+            
+            if (mode === 'mic') audio.startMic();
+            else audio.startDemo();
+
+            animate();
+        }
+
+        btnMic.addEventListener('click', () => startVisualizer('mic'));
+        btnDemo.addEventListener('click', () => startVisualizer('demo'));
+        btnStop.addEventListener('click', () => audio.stop());
+    </script>
+</body>
+</html>
